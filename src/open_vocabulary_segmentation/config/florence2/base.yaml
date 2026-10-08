@@ -1,0 +1,9 @@
+segmenter:
+  backend: florence2
+  weights_path: florence-community/Florence-2-base
+  batch_size: 4
+  device: auto
+  is_half_precision_enabled: false
+  thresholds:
+    confidence_threshold: 0.0
+    nms_iou_threshold: 0.5

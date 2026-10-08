@@ -1,0 +1,71 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "open-vocabulary-segmentation"
+version = "0.0.1"
+authors = [
+  { name = "Ryuto Yoshida" },
+]
+description = "Unified interface for open-vocabulary instance segmentation (SAM, SAM 2, SAM 3, Florence-2)."
+readme = "README.md"
+requires-python = ">=3.12"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+dependencies = [
+    "numpy",
+    "pillow",
+    "torch",
+    "torchvision",
+    "transformers>=5.0",
+    "geometry @ git+https://github.com/ry-yoshida-dev/Geometry.git@7a019d2696877c2beff959d8bb4b2e1efc9880c1",
+    "open-vocabulary-detector @ git+https://github.com/ry-yoshida-dev/OpenVocabularyDetector.git@6e2300c7e7cc75c97b09e34cda9eefef71b6029e",
+    "image-container @ git+https://github.com/ry-yoshida-dev/ImageContainer.git@f165e519c628f4e6de84f572aa5bb9f403118f46",
+    "opencv-contrib-python",
+]
+
+[project.urls]
+Homepage = "https://github.com/ry-yoshida-dev/OpenVocabularySegmentation"
+"Bug Tracker" = "https://github.com/ry-yoshida-dev/OpenVocabularySegmentation/issues"
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "pyyaml", "types-PyYAML", "mypy", "basedpyright", "ruff"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+open_vocabulary_segmentation = ["py.typed", "config/*/*.yaml"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+markers = ["slow: loads real model weights from the Hugging Face Hub; run with --run-slow"]
+
+[tool.mypy]
+strict = true
+mypy_path = "src"
+untyped_calls_exclude = [
+    "transformers.modeling_utils",
+    "transformers.models.sam.processing_sam",
+    "transformers.models.sam2.processing_sam2",
+    "transformers.models.sam3.processing_sam3",
+]
+
+[[tool.mypy.overrides]]
+module = ["torchvision.*"]
+ignore_missing_imports = true
+
+[tool.pyright]
+include = ["src"]
+typeCheckingMode = "strict"
+reportUnknownMemberType = false
+reportMissingTypeStubs = false
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
