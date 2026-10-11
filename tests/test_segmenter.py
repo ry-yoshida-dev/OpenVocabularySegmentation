@@ -3,11 +3,14 @@ from typing import ClassVar
 
 import numpy as np
 import pytest
+from geometry import Box2DFormat, Boxes2D
 from image_container import ChannelOrder, ImageContainer
 from PIL import Image
 
 from open_vocabulary_segmentation import (
+    BoxExemplars,
     Device,
+    ImageExemplars,
     ImageSize,
     OpenVocabularySegmenter,
     Prompt,
@@ -34,20 +37,24 @@ def build_masks(image_size: ImageSize) -> BoolArray:
 
 
 class StubSegmenter(OpenVocabularySegmenter):
-    BACKEND: ClassVar[SegmenterBackend] = SegmenterBackend.SAM3
+    BACKENDS: ClassVar[frozenset[SegmenterBackend]] = frozenset({SegmenterBackend.SAM3})
 
     def __init__(self, settings: SegmenterSettings) -> None:
         super().__init__(settings)
         self.mini_batch_sizes: list[int] = []
         self.query_ids: list[int] = QUERY_IDS
         self.received_modes: list[str] = []
+        self.received_exemplars: list[ImageExemplars | None] = []
 
     @property
     def supported_prompt_kinds(self) -> frozenset[PromptKind]:
         return frozenset({PromptKind.TEXT})
 
-    def _segment_mini_batch(self, images: Sequence[Image.Image], prompt: Prompt) -> list[SegmentationResult]:
+    def _segment_mini_batch(
+        self, images: Sequence[Image.Image], prompt: Prompt, exemplars: Sequence[ImageExemplars | None]
+    ) -> list[SegmentationResult]:
         self.mini_batch_sizes.append(len(images))
+        self.received_exemplars.extend(exemplars)
         self.received_modes.extend(image.mode for image in images)
         return [
             SegmentationResult.from_masks(
@@ -62,8 +69,16 @@ class StubSegmenter(OpenVocabularySegmenter):
 
 
 class TruncatingSegmenter(StubSegmenter):
-    def _segment_mini_batch(self, images: Sequence[Image.Image], prompt: Prompt) -> list[SegmentationResult]:
-        return super()._segment_mini_batch(images, prompt)[:-1]
+    def _segment_mini_batch(
+        self, images: Sequence[Image.Image], prompt: Prompt, exemplars: Sequence[ImageExemplars | None]
+    ) -> list[SegmentationResult]:
+        return super()._segment_mini_batch(images, prompt, exemplars)[:-1]
+
+
+class ExemplarSegmenter(StubSegmenter):
+    @property
+    def is_exemplar_supported(self) -> bool:
+        return True
 
 
 def build_settings(nms_iou_threshold: float | None = None) -> SegmenterSettings:
@@ -130,7 +145,7 @@ def test_settings_of_another_backend_are_rejected() -> None:
         weights_path="stub",
         thresholds=SegmentationThresholds(confidence_threshold=0.0, nms_iou_threshold=None),
     )
-    with pytest.raises(ValueError, match="needs sam3 settings"):
+    with pytest.raises(ValueError, match=r"needs settings of \['sam3'\]"):
         StubSegmenter(settings)
 
 
@@ -143,3 +158,34 @@ def test_image_containers_are_accepted_as_rgb() -> None:
     )
     assert segmenter.received_modes == ["RGB", "RGB", "RGB"]
     assert [result.image_size for result in results] == [ImageSize(width=100, height=50)] * 3
+
+
+def build_exemplars(xyxy: list[list[float]], class_name: str = "cat") -> ImageExemplars:
+    boxes: Boxes2D = Boxes2D.register(value=np.array(xyxy, dtype=np.float64), box2d_format=Box2DFormat.XYXY)
+    return ImageExemplars({class_name: BoxExemplars(positive_boxes=boxes)})
+
+
+def test_exemplars_are_rejected_without_exemplar_support() -> None:
+    segmenter: StubSegmenter = StubSegmenter(build_settings())
+    with pytest.raises(ValueError, match="does not support box exemplars"):
+        segmenter.segment(
+            Image.new("RGB", (100, 50)), Prompt.from_class_names(("cat", "dog")), build_exemplars([[0, 0, 5, 5]])
+        )
+    results: list[SegmentationResult] = segmenter.segment_images(
+        [Image.new("RGB", (100, 50))], Prompt.from_class_names(("cat", "dog")), [None]
+    )
+    assert len(results) == 1
+
+
+def test_exemplars_are_validated_and_passed_per_image() -> None:
+    segmenter: ExemplarSegmenter = ExemplarSegmenter(build_settings())
+    prompt: Prompt = Prompt.from_class_names(("cat", "dog"))
+    exemplars: ImageExemplars = build_exemplars([[0, 0, 5, 5]])
+    segmenter.segment_images([Image.new("RGB", (100, 50))] * 3, prompt, [exemplars, None, exemplars])
+    assert segmenter.received_exemplars == [exemplars, None, exemplars]
+    with pytest.raises(ValueError, match="expected exemplars for 2 images"):
+        segmenter.segment_images([Image.new("RGB", (100, 50))] * 2, prompt, [exemplars])
+    with pytest.raises(KeyError, match="'bird' is not a class"):
+        segmenter.segment(Image.new("RGB", (100, 50)), prompt, build_exemplars([[0, 0, 5, 5]], "bird"))
+    with pytest.raises(ValueError, match="inside the 100x50 image"):
+        segmenter.segment(Image.new("RGB", (100, 50)), prompt, build_exemplars([[0, 0, 105, 5]]))

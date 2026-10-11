@@ -7,7 +7,8 @@ from image_container import BinaryImage
 from open_vocabulary_detector import ImageSize, Prompt, PromptQuery
 
 from ..array_types import BoolArray, FloatArray, IntArray
-from .mask_overlap import MaskOverlap
+from .mask_bounds import MaskBounds
+from .mask_suppression import MaskSuppression
 from .segmentation import Segmentation
 
 
@@ -65,25 +66,9 @@ class SegmentationResult:
         query_count: int = len(self.prompt.queries)
         if instance_count and (self.query_ids.min() < 0 or self.query_ids.max() >= query_count):
             raise ValueError(f"query_ids must be in [0, {query_count}). got {self.query_ids}")
-        is_column_filled: BoolArray = self.masks.any(axis=1)
-        is_row_filled: BoolArray = self.masks.any(axis=2)
-        if not bool(is_column_filled.any(axis=1).all()):
+        if not bool(self.masks.any(axis=(1, 2)).all()):
             raise ValueError("masks must not be empty; build the result with from_masks to drop empty masks.")
-        object.__setattr__(
-            self,
-            "pixel_xyxy",
-            np.stack(
-                [
-                    is_column_filled.argmax(axis=1),
-                    is_row_filled.argmax(axis=1),
-                    self.image_size.width - is_column_filled[:, ::-1].argmax(axis=1),
-                    self.image_size.height - is_row_filled[:, ::-1].argmax(axis=1),
-                ],
-                axis=1,
-            )
-            .astype(np.int64)
-            .reshape(-1, 4),
-        )
+        object.__setattr__(self, "pixel_xyxy", MaskBounds.pixel_xyxy(self.masks))
 
     @classmethod
     def from_masks(
@@ -423,19 +408,14 @@ class SegmentationResult:
             raise ValueError(f"iou_threshold must be in [0, 1]. got {iou_threshold}")
         if not len(self):
             return self
-        overlaps: FloatArray = MaskOverlap.pairwise_iou(self.masks, self.pixel_xyxy)
-        if not is_class_agnostic:
-            class_ids: IntArray = self.class_ids
-            is_same_class: BoolArray = class_ids[:, None] == class_ids[None, :]
-            overlaps = np.where(is_same_class, overlaps, 0.0)
-        is_suppressed: BoolArray = np.zeros(len(self), dtype=np.bool_)
-        kept_indices: list[int] = []
-        for index in np.argsort(-self.confidences, kind="stable").tolist():
-            if is_suppressed[index]:
-                continue
-            kept_indices.append(index)
-            is_suppressed |= overlaps[index] > iou_threshold
-        return self.select(np.array(kept_indices, dtype=np.int64))
+        kept_indices: IntArray = MaskSuppression.kept_indices(
+            self.masks,
+            self.pixel_xyxy,
+            self.confidences,
+            iou_threshold,
+            group_ids=None if is_class_agnostic else self.class_ids,
+        )
+        return self.select(kept_indices)
 
     def class_map(self) -> IntArray:
         """

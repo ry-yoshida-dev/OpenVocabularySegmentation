@@ -1,0 +1,7 @@
+promptable_segmenter:
+  backend: sam
+  weights_path: facebook/sam-vit-base
+  batch_size: 4
+  decode_batch_size: 64
+  device: auto
+  precision: float32

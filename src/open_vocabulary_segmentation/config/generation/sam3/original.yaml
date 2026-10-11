@@ -1,0 +1,20 @@
+mask_generator:
+  segmenter:
+    backend: sam3
+    weights_path: facebook/sam3
+    batch_size: 1
+    decode_batch_size: 64
+    device: auto
+    precision: float32
+  options:
+    points_per_side: 32
+    points_per_batch: 64
+    mask_output: all_candidates
+    predicted_iou_threshold: 0.8
+    stability_score_threshold: 0.95
+    box_nms_threshold: 0.7
+    crop_layer_count: 0
+    crop_nms_threshold: 0.7
+    crop_overlap_ratio: 0.3413333333333333
+    crop_points_downscale_factor: 1
+    minimum_region_area: 0

@@ -1,5 +1,5 @@
-from .segmenter import SamSegmenter
+from .segmenter import SamPromptableSegmenter
 
 __all__ = [
-    "SamSegmenter",
+    "SamPromptableSegmenter",
 ]

@@ -1,0 +1,7 @@
+promptable_segmenter:
+  backend: sam3
+  weights_path: facebook/sam3
+  batch_size: 2
+  decode_batch_size: 64
+  device: auto
+  precision: float32

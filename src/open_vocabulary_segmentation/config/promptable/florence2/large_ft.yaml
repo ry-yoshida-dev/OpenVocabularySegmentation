@@ -1,0 +1,7 @@
+promptable_segmenter:
+  backend: florence2
+  weights_path: florence-community/Florence-2-large-ft
+  batch_size: 2
+  decode_batch_size: 8
+  device: auto
+  precision: float32

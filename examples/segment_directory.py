@@ -14,7 +14,7 @@ import argparse
 from pathlib import Path
 
 from image_container import ChannelOrder, ImageContainer
-from PIL import Image
+from PIL import Image, ImageOps
 
 from open_vocabulary_segmentation import (
     DetectionThresholds,
@@ -23,6 +23,7 @@ from open_vocabulary_segmentation import (
     Device,
     MaskOverlayRenderer,
     OpenVocabularySegmenter,
+    Precision,
     Prompt,
     PromptQuery,
     SegmentationResult,
@@ -84,6 +85,24 @@ def describe_query(query: PromptQuery) -> str:
             return f"<{len(references)} reference images>"
 
 
+def load_image(path: Path) -> Image.Image:
+    """
+    Read an image upright (EXIF orientation applied) in RGB and close its file.
+
+    Parameters
+    ----------
+    path : Path
+        Image file.
+
+    Returns
+    -------
+    Image.Image
+        RGB image, fully loaded.
+    """
+    with Image.open(path) as image:
+        return ImageOps.exif_transpose(image).convert("RGB")
+
+
 def build_box_detector(arguments: argparse.Namespace) -> DetectorSettings | None:
     """
     Settings of the box detector of a box-prompted backend.
@@ -116,7 +135,7 @@ def build_box_detector(arguments: argparse.Namespace) -> DetectorSettings | None
         ),
         batch_size=arguments.batch_size,
         device=arguments.device,
-        is_half_precision_enabled=arguments.half,
+        is_half_precision_enabled=arguments.precision is Precision.FLOAT16,
     )
 
 
@@ -138,7 +157,7 @@ def main() -> None:
     parser.add_argument("--box-nms-iou-threshold", type=float, default=0.5)
     parser.add_argument("--batch-size", type=int, default=4)
     parser.add_argument("--device", type=Device, choices=list(Device), default=Device.AUTO)
-    parser.add_argument("--half", action="store_true")
+    parser.add_argument("--precision", type=Precision, choices=list(Precision), default=Precision.FLOAT32)
     arguments: argparse.Namespace = parser.parse_args()
 
     image_directory: Path = arguments.image_directory
@@ -159,23 +178,25 @@ def main() -> None:
         box_detector=build_box_detector(arguments),
         batch_size=arguments.batch_size,
         device=arguments.device,
-        is_half_precision_enabled=arguments.half,
+        precision=arguments.precision,
     ).build()
     prompt: Prompt = parse_prompt(arguments.classes)
 
-    images: list[Image.Image] = [Image.open(path) for path in image_paths]
-    results: list[SegmentationResult] = segmenter.segment_images(images, prompt)
     renderer: MaskOverlayRenderer = MaskOverlayRenderer()
-
-    for path, image, result in zip(image_paths, images, results, strict=True):
-        print(f"{path.name}: {len(result)} instances")
-        for segmentation in result:
-            print(
-                f"  {segmentation.class_name:20s} {describe_query(segmentation.matched_query):20s} "
-                + f"{segmentation.confidence:.3f} {segmentation.area:8d}px {segmentation.box.value.round(1).tolist()}"
-            )
-        source = ImageContainer.register(image.convert("RGB"), ChannelOrder.RGB)
-        renderer.render(source, result).save(str(output_directory / f"{path.stem}_overlay.png"))
+    for start in range(0, len(image_paths), arguments.batch_size):
+        batch_paths: list[Path] = image_paths[start : start + arguments.batch_size]
+        images: list[Image.Image] = [load_image(path) for path in batch_paths]
+        results: list[SegmentationResult] = segmenter.segment_images(images, prompt)
+        for path, image, result in zip(batch_paths, images, results, strict=True):
+            print(f"{path.name}: {len(result)} instances")
+            for segmentation in result:
+                print(
+                    f"  {segmentation.class_name:20s} {describe_query(segmentation.matched_query):20s} "
+                    + f"{segmentation.confidence:.3f} {segmentation.area:8d}px "
+                    + f"{segmentation.box.value.round(1).tolist()}"
+                )
+            source = ImageContainer.register(image, ChannelOrder.RGB)
+            renderer.render(source, result).save(str(output_directory / f"{path.stem}_overlay.png"))
 
 
 if __name__ == "__main__":

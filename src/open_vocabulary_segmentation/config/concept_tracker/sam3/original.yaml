@@ -1,0 +1,25 @@
+concept_tracker:
+  weights_path: facebook/sam3
+  confidence_threshold: 0.5
+  tracker_score_threshold: 0.0
+  device: auto
+  precision: float32
+  is_frame_storage_on_device: false
+  is_tracking_state_on_device: false
+  stream_conditioning_frame_limit: 8
+  stream_lost_track_frame_count: 300
+  parameters:
+    detection_threshold: null
+    new_track_threshold: null
+    detection_nms_iou_threshold: null
+    association_iou_threshold: null
+    track_association_iou_threshold: null
+    hotstart_delay: null
+    hotstart_unmatched_frame_count: null
+    hotstart_duplicate_frame_count: null
+    recondition_interval: null
+    recondition_confidence_threshold: null
+    recondition_iou_threshold: null
+    occlusion_suppression_iou_threshold: null
+    max_object_count: null
+    fill_hole_area: null

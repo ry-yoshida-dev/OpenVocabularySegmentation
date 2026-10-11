@@ -8,6 +8,8 @@ BACKEND_MODULES: tuple[str, ...] = (
     "open_vocabulary_segmentation.backends.sam2",
     "open_vocabulary_segmentation.backends.sam3",
     "open_vocabulary_segmentation.backends.florence2",
+    "open_vocabulary_segmentation.backends.mask_decoder",
+    "open_vocabulary_segmentation.backends.memory_tracker",
 )
 
 

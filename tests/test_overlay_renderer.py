@@ -3,7 +3,17 @@ import pytest
 from image_container import ArrayImageContainer, ChannelOrder, ImageContainer
 from PIL import Image
 
-from open_vocabulary_segmentation import ImageSize, MaskOverlayRenderer, Prompt, SegmentationResult
+from open_vocabulary_segmentation import (
+    ConceptFrame,
+    ImageSize,
+    MaskGenerationResult,
+    MaskOverlayRenderer,
+    ObjectPrompt,
+    ObjectSegmentationResult,
+    Prompt,
+    SegmentationResult,
+    TrackedFrame,
+)
 from open_vocabulary_segmentation.array_types import BoolArray
 
 IMAGE_SIZE: ImageSize = ImageSize(width=20, height=10)
@@ -52,5 +62,66 @@ def test_invalid_renderer_settings_raise() -> None:
         MaskOverlayRenderer(contour_thickness=-1)
     with pytest.raises(ValueError, match="palette must have"):
         MaskOverlayRenderer(palette=())
-    with pytest.raises(ValueError, match="palette channels"):
+    with pytest.raises(ValueError, match="color channels"):
         MaskOverlayRenderer(palette=((0, 0, 300),))
+
+
+def build_canvas() -> ArrayImageContainer:
+    return ArrayImageContainer(value=np.zeros((10, 20, 3), dtype=np.uint8), channel_order=ChannelOrder.RGB)
+
+
+def test_render_objects_draws_masks_and_prompts() -> None:
+    renderer: MaskOverlayRenderer = MaskOverlayRenderer(
+        opacity=1.0, contour_thickness=0, palette=((255, 0, 0), (0, 0, 255)), point_radius=1
+    )
+    masks: BoolArray = np.zeros((2, 10, 20), dtype=np.bool_)
+    masks[0, 0:5, 0:5] = True
+    masks[1, 5:10, 10:20] = True
+    result: ObjectSegmentationResult = ObjectSegmentationResult(
+        masks=masks,
+        scores=np.array([0.9, 0.8]),
+        stability_scores=np.array([0.9, 0.9]),
+        prompt_indices=np.array([0, 1]),
+        prompts=(
+            ObjectPrompt.from_coordinates(positive_points=[(2, 2)], negative_points=[(8, 2)]),
+            ObjectPrompt.from_coordinates(box_xyxy=(10, 5, 19, 9)),
+        ),
+        mask_logits=(None, None),
+        image_size=IMAGE_SIZE,
+    )
+    plain: ArrayImageContainer = renderer.render_objects(build_canvas(), result, is_prompt_drawn=False)
+    assert plain.value[4, 4].tolist() == [255, 0, 0]
+    assert plain.value[7, 15].tolist() == [0, 0, 255]
+    with_prompts: ArrayImageContainer = renderer.render_objects(build_canvas(), result)
+    assert with_prompts.value[2, 2].tolist() == list(renderer.positive_point_color)
+    assert with_prompts.value[2, 8].tolist() == list(renderer.negative_point_color)
+    assert with_prompts.value[5, 12].tolist() == [0, 0, 255]
+
+
+def test_render_tracked_concepts_and_generated() -> None:
+    renderer: MaskOverlayRenderer = MaskOverlayRenderer(
+        opacity=1.0, contour_thickness=0, palette=((255, 0, 0), (0, 255, 0))
+    )
+    masks: BoolArray = np.zeros((1, 10, 20), dtype=np.bool_)
+    masks[0, 0:3, 0:3] = True
+    tracked: TrackedFrame = TrackedFrame(
+        frame_index=0, object_ids=np.array([1]), masks=masks, presence_scores=np.array([1.0]), image_size=IMAGE_SIZE
+    )
+    assert renderer.render_tracked(build_canvas(), tracked).value[1, 1].tolist() == [0, 255, 0]
+    concepts: ConceptFrame = ConceptFrame(
+        frame_index=0, instances=build_result(), track_ids=np.array([2, 5]), tracker_scores=np.array([0.9, 0.8])
+    )
+    assert renderer.render_concepts(build_canvas(), concepts).value[1, 1].tolist() == [255, 0, 0]
+    generated: MaskGenerationResult = MaskGenerationResult(
+        masks=masks,
+        scores=np.array([0.9]),
+        stability_scores=np.array([0.9]),
+        point_xy=np.zeros((1, 2)),
+        crop_xyxy=np.zeros((1, 4)),
+        image_size=IMAGE_SIZE,
+    )
+    assert renderer.render_generated(build_canvas(), generated).value[1, 1].tolist() == [255, 0, 0]
+    with pytest.raises(ValueError, match="color_ids"):
+        renderer.render_masks(build_canvas(), IMAGE_SIZE, masks, np.array([0, 1]), np.array([0]))
+    with pytest.raises(ValueError, match="point_radius"):
+        MaskOverlayRenderer(point_radius=0)

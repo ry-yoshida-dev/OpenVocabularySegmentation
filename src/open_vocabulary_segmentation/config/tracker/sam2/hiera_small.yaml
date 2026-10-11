@@ -1,0 +1,8 @@
+object_tracker:
+  backend: sam2
+  weights_path: facebook/sam2.1-hiera-small
+  device: auto
+  precision: float32
+  is_frame_storage_on_device: false
+  is_tracking_state_on_device: false
+  stream_conditioning_frame_limit: 8

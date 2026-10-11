@@ -1,0 +1,9 @@
+segmenter:
+  backend: sam3
+  weights_path: vil-uob/sam3-litetext-l
+  batch_size: 2
+  device: auto
+  precision: float32
+  thresholds:
+    confidence_threshold: 0.5
+    nms_iou_threshold: 0.5

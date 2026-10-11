@@ -1,35 +1,38 @@
 import torch
 from open_vocabulary_detector import Device
 
-from ..settings import SegmenterSettings
+from ..options import Precision
 
 
 class TorchRuntime:
     """
-    Runs PyTorch models on the device and precision requested by ``SegmenterSettings``.
+    Runs PyTorch models on a requested device and precision.
 
-    Segmenters backed by PyTorch hold one; a segmenter backed by another runtime (ONNX Runtime, TensorRT) would hold
-    its own runtime instead, while sharing everything else through ``OpenVocabularySegmenter``.
+    Segmenters and trackers backed by PyTorch hold one; a model backed by another runtime (ONNX Runtime, TensorRT)
+    would hold its own runtime instead.
     """
 
-    def __init__(self, settings: SegmenterSettings) -> None:
+    def __init__(self, device: Device, precision: Precision) -> None:
         """
         Parameters
         ----------
-        settings : SegmenterSettings
-            Device and precision to run with.
+        device : Device
+            Device to run on; ``AUTO`` picks CUDA, then MPS, then the CPU.
+        precision : Precision
+            Precision of the model weights and floating-point inputs.
 
         Raises
         ------
         RuntimeError
             If an explicitly requested GPU backend is unavailable.
         ValueError
-            If half precision is requested and the device resolves to the CPU.
+            If the precision is not supported on the CPU and the device resolves to the CPU.
         """
-        self._device: torch.device = self._resolve_device(settings.device)
-        if settings.is_half_precision_enabled and self._device.type == Device.CPU:
-            raise ValueError("half precision is not supported on the CPU.")
-        self._dtype: torch.dtype = torch.float16 if settings.is_half_precision_enabled else torch.float32
+        self._device: torch.device = self._resolve_device(device)
+        if self._device.type == Device.CPU and not precision.is_cpu_supported:
+            raise ValueError(f"{precision} precision is not supported on the CPU.")
+        self._precision: Precision = precision
+        self._dtype: torch.dtype = self._resolve_dtype(precision)
 
     @property
     def device(self) -> torch.device:
@@ -44,6 +47,18 @@ class TorchRuntime:
         return self._device
 
     @property
+    def precision(self) -> Precision:
+        """
+        Precision of the model weights and floating-point inputs.
+
+        Returns
+        -------
+        Precision
+            Requested precision.
+        """
+        return self._precision
+
+    @property
     def dtype(self) -> torch.dtype:
         """
         Floating-point type of the model weights and floating-point inputs.
@@ -51,7 +66,7 @@ class TorchRuntime:
         Returns
         -------
         torch.dtype
-            ``torch.float16`` with half precision, otherwise ``torch.float32``.
+            dtype of ``precision``.
         """
         return self._dtype
 
@@ -69,7 +84,7 @@ class TorchRuntime:
 
     def to_model_input(self, values: torch.Tensor) -> torch.Tensor:
         """
-        Move floating-point model inputs (pixels, box coordinates) to the runtime device and dtype.
+        Move floating-point model inputs (pixels, coordinates, mask logits) to the runtime device and dtype.
 
         Parameters
         ----------
@@ -82,6 +97,32 @@ class TorchRuntime:
             Input ready for the model.
         """
         return values.to(device=self._device, dtype=self._dtype)
+
+    def to_device(self, values: torch.Tensor) -> torch.Tensor:
+        """
+        Move non-floating-point model inputs (token ids, labels, attention masks) to the runtime device.
+
+        Parameters
+        ----------
+        values : torch.Tensor
+            Preprocessed input whose dtype must be kept.
+
+        Returns
+        -------
+        torch.Tensor
+            Input on the runtime device.
+        """
+        return values.to(device=self._device)
+
+    @staticmethod
+    def _resolve_dtype(precision: Precision) -> torch.dtype:
+        match precision:
+            case Precision.FLOAT32:
+                return torch.float32
+            case Precision.FLOAT16:
+                return torch.float16
+            case Precision.BFLOAT16:
+                return torch.bfloat16
 
     @staticmethod
     def _resolve_device(device: Device) -> torch.device:

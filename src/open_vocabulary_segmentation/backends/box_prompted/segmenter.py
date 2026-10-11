@@ -1,9 +1,8 @@
-from abc import abstractmethod
 from collections.abc import Sequence
 from typing import ClassVar
 
 import numpy as np
-import torch
+from geometry import Box2D, Box2DFormat
 from open_vocabulary_detector import (
     DetectionResult,
     DetectorSettings,
@@ -13,54 +12,62 @@ from open_vocabulary_detector import (
     PromptKind,
 )
 from PIL import Image
-from transformers import BatchEncoding
 
-from ...array_types import BoolArray, FloatArray
-from ...result import SegmentationResult
-from ...runtime import TorchRuntime
+from ...array_types import BoolArray, FloatArray, IntArray
+from ...exemplars import ImageExemplars
+from ...object_prompt import ObjectPrompt
+from ...options import MaskOutput, PromptableBackend, SegmenterBackend
+from ...promptable import EncodedImage, PromptableSegmenter, PromptableSegmenterSettings
+from ...result import ObjectSegmentationResult, SegmentationResult
 from ...segmenter import OpenVocabularySegmenter
 from ...settings import SegmenterSettings
-from ..checkpoint_config import CheckpointConfig
 
 
-class BoxPromptedSegmenter[EmbeddingT](OpenVocabularySegmenter):
+class BoxPromptedSegmenter(OpenVocabularySegmenter):
     """
-    Base of segmenters that mask the boxes found by an open-vocabulary detector (Grounded-SAM style).
+    Open-vocabulary segmenter masking the boxes of an open-vocabulary detector with a promptable model
+    (Grounded-SAM style).
 
     The box detector from ``SegmenterSettings.box_detector`` finds the instances of the prompt, so the accepted query
     kinds, the confidences and the matched queries are those of the detector; its thresholds and NMS select the
-    boxes. Each image with at least one box is preprocessed once together with its boxes, the images of a
-    mini-batch are embedded in one pass, and the boxes of each image are decoded in chunks of ``BOX_CHUNK_SIZE``
-    into one mask per box. Images without boxes skip the segmentation model.
-
-    Subclasses provide the model-specific steps through ``_preprocess``, ``_embed_images``, ``_decode_masks`` and
-    ``_upscale_masks``; ``EmbeddingT`` is the image embedding type of the model.
+    boxes. Boxes are clipped to the image, the images with at least one box are encoded together by the promptable
+    segmenter of the backend, and every box becomes one mask of the single-mask head. Images without boxes skip the
+    segmentation model.
     """
 
-    MODEL_TYPES: ClassVar[frozenset[str]]
-    BOX_CHUNK_SIZE: ClassVar[int] = 32
+    BACKENDS: ClassVar[frozenset[SegmenterBackend]] = frozenset(
+        backend for backend in SegmenterBackend if backend.is_box_prompted
+    )
 
     def __init__(self, settings: SegmenterSettings) -> None:
         """
-        Check the checkpoint and build the box detector.
+        Build the box detector and the promptable segmenter masking its boxes.
 
         Parameters
         ----------
         settings : SegmenterSettings
-            Checkpoint, box detector, batching, device and thresholds.
+            Checkpoint, box detector, batching, device, precision and thresholds.
 
         Raises
         ------
         ValueError
-            If the settings have no box detector or the checkpoint is not one of ``MODEL_TYPES``.
+            If the settings have no box detector or the checkpoint does not fit the backend.
         """
         super().__init__(settings)
         box_detector_settings: DetectorSettings | None = settings.box_detector
-        if box_detector_settings is None:
-            raise ValueError(f"{type(self).__name__} needs box_detector settings.")
-        CheckpointConfig.require_model_type(settings.weights_path, self.MODEL_TYPES)
-        self._runtime: TorchRuntime = TorchRuntime(settings)
+        promptable_backend: PromptableBackend | None = settings.backend.promptable_backend
+        if box_detector_settings is None or promptable_backend is None:
+            raise ValueError(f"{type(self).__name__} needs box_detector settings and a box-prompted backend.")
         self._box_detector: OpenVocabularyDetector = box_detector_settings.build()
+        self._mask_segmenter: PromptableSegmenter = self._build_mask_segmenter(
+            PromptableSegmenterSettings(
+                backend=promptable_backend,
+                weights_path=settings.weights_path,
+                batch_size=settings.batch_size,
+                device=settings.device,
+                precision=settings.precision,
+            )
+        )
 
     @property
     def box_detector(self) -> OpenVocabularyDetector:
@@ -75,6 +82,18 @@ class BoxPromptedSegmenter[EmbeddingT](OpenVocabularySegmenter):
         return self._box_detector
 
     @property
+    def mask_segmenter(self) -> PromptableSegmenter:
+        """
+        Promptable segmenter masking the boxes, also usable for interactive prompts on the same weights.
+
+        Returns
+        -------
+        PromptableSegmenter
+            Segmenter of the backend's promptable family.
+        """
+        return self._mask_segmenter
+
+    @property
     def supported_prompt_kinds(self) -> frozenset[PromptKind]:
         """
         Query kinds the box detector accepts.
@@ -86,114 +105,68 @@ class BoxPromptedSegmenter[EmbeddingT](OpenVocabularySegmenter):
         """
         return self._box_detector.supported_prompt_kinds
 
-    @abstractmethod
-    def _preprocess(self, image: Image.Image, xyxy: FloatArray) -> BatchEncoding:
+    def _build_mask_segmenter(self, settings: PromptableSegmenterSettings) -> PromptableSegmenter:
         """
-        Preprocess one image together with its boxes.
+        Load the promptable segmenter masking the boxes.
 
         Parameters
         ----------
-        image : Image.Image
-            RGB image.
-        xyxy : FloatArray
-            Absolute XYXY pixel boxes, shape (N, 4) with N > 0.
+        settings : PromptableSegmenterSettings
+            Settings derived from the segmenter settings.
 
         Returns
         -------
-        BatchEncoding
-            Processor output with ``pixel_values`` of shape (1, C, H, W) and ``input_boxes`` of shape (1, N, 4).
+        PromptableSegmenter
+            Loaded segmenter.
         """
+        return settings.build()
 
-    @abstractmethod
-    def _embed_images(self, pixel_values: torch.Tensor) -> EmbeddingT:
-        """
-        Run the image encoder once over a mini-batch.
-
-        Parameters
-        ----------
-        pixel_values : torch.Tensor
-            Preprocessed images on the runtime device and dtype, shape (B, C, H, W).
-
-        Returns
-        -------
-        EmbeddingT
-            Image embeddings of the mini-batch.
-        """
-
-    @abstractmethod
-    def _decode_masks(self, embeddings: EmbeddingT, image_index: int, input_boxes: torch.Tensor) -> torch.Tensor:
-        """
-        Decode one mask per box of one image.
-
-        Parameters
-        ----------
-        embeddings : EmbeddingT
-            Image embeddings of the mini-batch.
-        image_index : int
-            Index of the image in ``embeddings``.
-        input_boxes : torch.Tensor
-            Boxes in model input coordinates on the runtime device and dtype, shape (1, N, 4).
-
-        Returns
-        -------
-        torch.Tensor
-            Low-resolution mask logits, shape (1, N, 1, h, w).
-        """
-
-    @abstractmethod
-    def _upscale_masks(self, mask_logits: torch.Tensor, inputs: BatchEncoding) -> BoolArray:
-        """
-        Resize low-resolution mask logits to the source image and binarize them.
-
-        Parameters
-        ----------
-        mask_logits : torch.Tensor
-            Low-resolution mask logits as float32 on the CPU, shape (1, N, 1, h, w).
-        inputs : BatchEncoding
-            Output of ``_preprocess`` for the image.
-
-        Returns
-        -------
-        BoolArray
-            Masks in the source image, shape (N, H, W).
-        """
-
-    def _segment_mini_batch(self, images: Sequence[Image.Image], prompt: Prompt) -> list[SegmentationResult]:
+    def _segment_mini_batch(
+        self, images: Sequence[Image.Image], prompt: Prompt, exemplars: Sequence[ImageExemplars | None]
+    ) -> list[SegmentationResult]:
         detections: list[DetectionResult] = self._box_detector.detect_images(images, prompt)
-        masks: list[BoolArray] = self._mask_boxes(images, [detection.xyxy for detection in detections])
-        return [
-            SegmentationResult.from_masks(
-                masks=image_masks,
-                confidences=detection.confidences,
-                query_ids=detection.query_ids,
-                prompt=prompt,
-                image_size=ImageSize.from_image(image),
+        prompted_indices: list[int] = [index for index, detection in enumerate(detections) if len(detection)]
+        encodings: dict[int, EncodedImage] = dict(
+            zip(
+                prompted_indices,
+                self._mask_segmenter.encode_images([images[index] for index in prompted_indices]),
+                strict=True,
             )
-            for image_masks, detection, image in zip(masks, detections, images, strict=True)
-        ]
-
-    def _mask_boxes(self, images: Sequence[Image.Image], boxes: Sequence[FloatArray]) -> list[BoolArray]:
-        masks: list[BoolArray] = [np.zeros((0, image.height, image.width), dtype=np.bool_) for image in images]
-        prompted_indices: list[int] = [index for index, xyxy in enumerate(boxes) if len(xyxy)]
-        if not prompted_indices:
-            return masks
-        inputs: list[BatchEncoding] = [self._preprocess(images[index], boxes[index]) for index in prompted_indices]
-        pixel_values: torch.Tensor = torch.cat([image_inputs["pixel_values"] for image_inputs in inputs])
-        with torch.inference_mode():
-            embeddings: EmbeddingT = self._embed_images(self._runtime.to_model_input(pixel_values))
-            for batch_index, (image_index, image_inputs) in enumerate(zip(prompted_indices, inputs, strict=True)):
-                input_boxes: torch.Tensor = self._runtime.to_model_input(image_inputs["input_boxes"])
-                masks[image_index] = np.concatenate(
-                    [
-                        self._upscale_masks(
-                            self._decode_masks(
-                                embeddings, batch_index, input_boxes[:, start : start + self.BOX_CHUNK_SIZE]
-                            )
-                            .float()
-                            .cpu(),
-                            image_inputs,
-                        )
-                        for start in range(0, input_boxes.shape[1], self.BOX_CHUNK_SIZE)
-                    ]
+        )
+        results: list[SegmentationResult] = []
+        for index, (image, detection) in enumerate(zip(images, detections, strict=True)):
+            image_size: ImageSize = ImageSize.from_image(image)
+            encoding: EncodedImage | None = encodings.get(index)
+            masks: BoolArray = (
+                np.zeros((0, image_size.height, image_size.width), dtype=np.bool_)
+                if encoding is None
+                else self._mask_boxes(encoding, detection.xyxy)
+            )
+            results.append(
+                SegmentationResult.from_masks(
+                    masks=masks,
+                    confidences=detection.confidences,
+                    query_ids=detection.query_ids,
+                    prompt=prompt,
+                    image_size=image_size,
                 )
+            )
+        return results
+
+    def _mask_boxes(self, encoding: EncodedImage, xyxy: FloatArray) -> BoolArray:
+        image_size: ImageSize = encoding.image_size
+        clipped: FloatArray = np.clip(
+            xyxy, 0.0, np.array([image_size.width, image_size.height, image_size.width, image_size.height])
+        )
+        is_valid: BoolArray = (clipped[:, 2] > clipped[:, 0]) & (clipped[:, 3] > clipped[:, 1])
+        masks: BoolArray = np.zeros((len(clipped), image_size.height, image_size.width), dtype=np.bool_)
+        valid_indices: IntArray = np.flatnonzero(is_valid).astype(np.int64)
+        if not len(valid_indices):
+            return masks
+        prompts: list[ObjectPrompt] = [
+            ObjectPrompt(box=Box2D.register(value=clipped[index], box2d_format=Box2DFormat.XYXY))
+            for index in valid_indices.tolist()
+        ]
+        result: ObjectSegmentationResult = self._mask_segmenter.segment(encoding, prompts, MaskOutput.SINGLE)
+        masks[valid_indices] = result.masks
         return masks

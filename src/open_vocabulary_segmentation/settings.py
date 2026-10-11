@@ -3,7 +3,7 @@ from typing import TYPE_CHECKING
 
 from open_vocabulary_detector import DetectorSettings, Device
 
-from .options import SegmentationThresholds, SegmenterBackend
+from .options import Precision, SegmentationThresholds, SegmenterBackend
 
 if TYPE_CHECKING:
     from .segmenter import OpenVocabularySegmenter
@@ -33,8 +33,8 @@ class SegmenterSettings:
         Number of images per forward pass.
     device : Device
         Device to run the segmentation model on; the box detector has its own.
-    is_half_precision_enabled : bool
-        Whether to run the segmentation model in float16; GPU only.
+    precision : Precision
+        Precision of the segmentation model; ``float16`` is GPU only.
 
     Raises
     ------
@@ -49,7 +49,7 @@ class SegmenterSettings:
     box_detector: DetectorSettings | None = None
     batch_size: int = 4
     device: Device = Device.AUTO
-    is_half_precision_enabled: bool = False
+    precision: Precision = Precision.FLOAT32
 
     def __post_init__(self) -> None:
         if not self.weights_path.strip():
@@ -65,7 +65,8 @@ class SegmenterSettings:
         """
         Load the segmenter of ``backend`` with these settings.
 
-        Only the sub-package of ``backend`` is imported. Box-prompted backends also build their ``box_detector``.
+        Only the sub-package of ``backend`` is imported. Box-prompted backends also build their ``box_detector`` and
+        the promptable segmenter masking its boxes.
 
         Returns
         -------
@@ -78,14 +79,10 @@ class SegmenterSettings:
             If the checkpoint has an architecture of another backend.
         """
         match self.backend:
-            case SegmenterBackend.SAM:
-                from .backends.sam import SamSegmenter
+            case SegmenterBackend.SAM | SegmenterBackend.SAM2 | SegmenterBackend.EDGETAM:
+                from .backends.box_prompted import BoxPromptedSegmenter
 
-                return SamSegmenter(self)
-            case SegmenterBackend.SAM2:
-                from .backends.sam2 import Sam2Segmenter
-
-                return Sam2Segmenter(self)
+                return BoxPromptedSegmenter(self)
             case SegmenterBackend.SAM3:
                 from .backends.sam3 import Sam3Segmenter
 
@@ -94,3 +91,7 @@ class SegmenterSettings:
                 from .backends.florence2 import Florence2Segmenter
 
                 return Florence2Segmenter(self)
+            case SegmenterBackend.FLORENCE2_REFERRING:
+                from .backends.florence2 import Florence2ReferringSegmenter
+
+                return Florence2ReferringSegmenter(self)
