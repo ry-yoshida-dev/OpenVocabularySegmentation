@@ -9,7 +9,7 @@ frame at a time with bounded memory, e.g. from a camera.
 | Need | Tracker | Backends | Input |
 | ---- | ------- | -------- | ----- |
 | Follow objects you mark | `ObjectTracker` | SAM 2 / SAM 2.1, SAM 3 tracker | `ObjectPrompt` per object id on any frame |
-| Find and follow every instance of a concept | `ConceptTracker` | SAM 3 video | `Prompt` of text queries |
+| Find and follow every instance of a concept | `ConceptTracker` | SAM 3 video | `Prompt` of text or visual queries |
 
 ## Components
 

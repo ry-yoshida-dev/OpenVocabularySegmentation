@@ -3,7 +3,7 @@ from typing import ClassVar, cast
 
 import numpy as np
 import torch
-from open_vocabulary_detector import ImageSize, Prompt
+from open_vocabulary_detector import ImageSize
 from PIL import Image
 from transformers import BatchEncoding, Sam3VideoModel, Sam3VideoProcessor
 from transformers.models.sam3_video.modeling_sam3_video import (
@@ -17,13 +17,16 @@ from ...runtime import TorchRuntime
 from ...video.concept_tracking import ConceptFrame, ConceptTrackerSettings, ConceptTrackingSession
 from ..memory_tracker.history_pruner import HistoryPruner
 from .fusion_state_pruner import FusionStatePruner
+from .prompt_encoding import PromptEncoding
 
 
 class Sam3ConceptTrackingSession(ConceptTrackingSession):
     """
     Concept tracking session of SAM 3 video, backed by a ``transformers`` inference session.
 
-    Every text query of the prompt is a SAM 3 video prompt; each track reports the query that detected it. Instances
+    Every query of the prompt is a SAM 3 video prompt whose features come from ``PromptEncoder``, so visual queries
+    are tracked like phrases; each track reports the query that detected it. ``transformers`` names a prompt by its
+    text, so every query is registered under its own key (``QUERY_KEY_FORMAT``) with its features already encoded. Instances
     below ``confidence_threshold`` (detection score of the track) or ``tracker_score_threshold`` (presence on the
     frame) are hidden but keep being tracked. A backward pass starts on its start frame like a forward pass, although
     ``transformers`` starts it one frame earlier; after a forward pass it skips the start frame already tracked. A
@@ -40,6 +43,7 @@ class Sam3ConceptTrackingSession(ConceptTrackingSession):
     OBJECT_IDS_KEY: ClassVar[str] = "object_ids"
     PROMPT_TO_OBJECT_IDS_KEY: ClassVar[str] = "prompt_to_obj_ids"
     INITIAL_MAX_OBJECT_ID: ClassVar[int] = -1
+    QUERY_KEY_FORMAT: ClassVar[str] = "query {query_id}"
 
     def __init__(
         self,
@@ -47,7 +51,7 @@ class Sam3ConceptTrackingSession(ConceptTrackingSession):
         processor: Sam3VideoProcessor,
         inference_session: Sam3VideoInferenceSession,
         runtime: TorchRuntime,
-        prompt: Prompt,
+        prompt_encoding: PromptEncoding,
         settings: ConceptTrackerSettings,
         image_size: ImageSize | None,
         frame_count: int,
@@ -63,8 +67,8 @@ class Sam3ConceptTrackingSession(ConceptTrackingSession):
             ``transformers`` session, holding a whole video or empty for a stream.
         runtime : TorchRuntime
             Device and dtype of the model.
-        prompt : Prompt
-            Tracked classes and their text queries.
+        prompt_encoding : PromptEncoding
+            Tracked classes and the encoded features of their queries.
         settings : ConceptTrackerSettings
             Score thresholds and stream limits.
         image_size : ImageSize | None
@@ -72,20 +76,29 @@ class Sam3ConceptTrackingSession(ConceptTrackingSession):
         frame_count : int
             Number of frames of a whole video; ``0`` for a stream.
         """
-        super().__init__(prompt=prompt, image_size=image_size, frame_count=frame_count, is_streaming=image_size is None)
+        super().__init__(
+            prompt=prompt_encoding.prompt,
+            image_size=image_size,
+            frame_count=frame_count,
+            is_streaming=image_size is None,
+        )
         self._model: Sam3VideoModel = model
         self._processor: Sam3VideoProcessor = processor
         self._inference_session: Sam3VideoInferenceSession = inference_session
         self._runtime: TorchRuntime = runtime
         self._settings: ConceptTrackerSettings = settings
-        self._query_ids_by_text: dict[str, int] = {text: index for index, text in enumerate(prompt.query_texts)}
+        self._prompt_encoding: PromptEncoding = prompt_encoding
+        self._query_ids_by_key: dict[str, int] = {
+            self.QUERY_KEY_FORMAT.format(query_id=query_id): query_id
+            for query_id in range(len(prompt_encoding.prompt.queries))
+        }
         self._last_seen_frame_by_track: dict[int, int] = {}
         self._history_pruner: HistoryPruner = HistoryPruner(
             history_length=self._history_length_of(model),
             conditioning_frame_limit=settings.stream_conditioning_frame_limit,
         )
         self._fusion_state_pruner: FusionStatePruner = FusionStatePruner()
-        self._add_text_prompts()
+        self._add_query_prompts()
 
     @property
     def track_ids(self) -> tuple[int, ...]:
@@ -144,7 +157,7 @@ class Sam3ConceptTrackingSession(ConceptTrackingSession):
         self._inference_session.max_obj_id = self.INITIAL_MAX_OBJECT_ID
         self._inference_session.hotstart_removed_obj_ids.clear()
         self._last_seen_frame_by_track.clear()
-        self._add_text_prompts()
+        self._add_query_prompts()
 
     def _remove_track(self, track_id: int) -> None:
         self._inference_session.remove_object(track_id, strict=True)
@@ -154,8 +167,13 @@ class Sam3ConceptTrackingSession(ConceptTrackingSession):
         else:
             self._inference_session.hotstart_removed_obj_ids.add(track_id)
 
-    def _add_text_prompts(self) -> None:
-        self._processor.add_text_prompt(self._inference_session, list(self._prompt.query_texts))
+    def _add_query_prompts(self) -> None:
+        for key, query_id in self._query_ids_by_key.items():
+            prompt_id: int = self._inference_session.add_prompt(key)
+            self._inference_session.prompt_embeddings[prompt_id] = self._prompt_encoding.text_embeddings(query_id, 1)
+            self._inference_session.prompt_attention_masks[prompt_id] = self._prompt_encoding.query_attention_mask(
+                query_id, 1
+            )
 
     def _drop_lost_tracks(self, frame_index: int) -> None:
         for track_id in self.track_ids:
@@ -206,9 +224,9 @@ class Sam3ConceptTrackingSession(ConceptTrackingSession):
             raise TypeError(f"unexpected prompt mapping: {type(raw_mapping)}")
         prompt_to_object_ids: dict[str, list[int]] = cast(dict[str, list[int]], raw_mapping)
         query_id_by_object: dict[int, int] = {}
-        for text, text_object_ids in prompt_to_object_ids.items():
-            for object_id in text_object_ids:
-                query_id_by_object[int(object_id)] = self._query_ids_by_text[text]
+        for key, key_object_ids in prompt_to_object_ids.items():
+            for object_id in key_object_ids:
+                query_id_by_object[int(object_id)] = self._query_ids_by_key[key]
         return np.array([query_id_by_object[int(object_id)] for object_id in object_ids], dtype=np.int64)
 
     @staticmethod

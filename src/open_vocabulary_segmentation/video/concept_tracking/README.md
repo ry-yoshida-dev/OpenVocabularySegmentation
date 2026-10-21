@@ -2,7 +2,7 @@
 
 ## Overview
 
-Promptable concept segmentation in video (SAM 3 video): every instance of every text query of a `Prompt` is
+Promptable concept segmentation in video (SAM 3 video): every instance of every query of a `Prompt` (text, and visual for SAM 3) is
 detected on every frame, matched with the existing tracks, and given a track identifier when it first appears.
 Each `ConceptFrame` is a regular `SegmentationResult` (class, matched query, mask and the detection score that
 started the track as confidence) plus the aligned track ids and per-frame tracker (presence) scores; both scores have

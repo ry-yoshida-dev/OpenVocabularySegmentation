@@ -25,6 +25,8 @@ Unit tests that run without downloading model weights, plus smoke tests of every
 | [test_overlay_renderer.py](./test_overlay_renderer.py) | `MaskOverlayRenderer` tinting, blending, outlines, prompts and every result type. |
 | [test_box_prompted.py](./test_box_prompted.py) | Detector boxes masked by a promptable segmenter with the detector's confidences and queries, skipped images, shared passes, clipping and checkpoint checks. |
 | [test_florence2_polygons.py](./test_florence2_polygons.py) | Florence-2 polygon parsing, rasterization and location tokens of region prompts. |
+| [stub_sam3.py](./stub_sam3.py) | `StubSam3`: a SAM 3 detector and processor whose features reveal texts and geometry calls. |
+| [test_sam3_prompt_encoder.py](./test_sam3_prompt_encoder.py) | SAM 3 visual queries as the visual text plus reference geometry, padding and geometry reuse. |
 | [test_sam3_prompt_encoding.py](./test_sam3_prompt_encoding.py) | SAM 3 text features repeated per image, reuse per prompt and validation. |
 | [test_torch_runtime.py](./test_torch_runtime.py) | `TorchRuntime` device resolution, precisions and model preparation. |
 | [test_package_import.py](./test_package_import.py) | Importing the package loads no backend (`transformers` models). |

@@ -6,13 +6,7 @@ import numpy as np
 import torch
 from open_vocabulary_detector import ImageSize, Prompt, PromptKind
 from PIL import Image
-from transformers import (
-    BatchEncoding,
-    BatchFeature,
-    Sam3LiteTextModel,
-    Sam3Model,
-    Sam3Processor,
-)
+from transformers import BatchFeature, Sam3LiteTextModel, Sam3Model, Sam3Processor
 
 from ...array_types import BoolArray, Float32Array, FloatArray, IntArray
 from ...exemplars import BoxExemplars, ImageExemplars
@@ -26,6 +20,7 @@ from ..checkpoint_config import CheckpointConfig
 from .exemplar_tensors import ExemplarTensors
 from .model_outputs import Sam3SegmentationOutput, Sam3VisionOutput
 from .prediction import Sam3Prediction
+from .prompt_encoder import PromptEncoder
 from .prompt_encoding import PromptEncoding
 from .query_group import QueryGroup
 
@@ -34,21 +29,20 @@ class Sam3Segmenter(OpenVocabularySegmenter):
     """
     SAM 3 promptable concept segmentation backed by ``transformers.Sam3Model`` (or ``Sam3LiteTextModel``).
 
-    SAM 3 finds and masks every instance of a concept on its own. A concept is a text query, optionally with box
-    exemplars drawn on the image (``ImageExemplars``): positive boxes show the class, negative boxes show
-    look-alikes to exclude, and a class may also be defined by its boxes alone (``BoxExemplars.is_text_ignored``),
-    which SAM 3 reads as the text ``VISUAL_ONLY_TEXT``. Besides instances, the semantic head gives a probability map
-    per class (``segment_semantic_images``).
+    SAM 3 finds and masks every instance of a concept on its own. A concept is a text query or a visual query, whose
+    reference boxes are encoded on their reference images (``PromptEncoder``), optionally with box exemplars drawn on
+    the image (``ImageExemplars``): positive boxes show the class, negative boxes show look-alikes to exclude, and a
+    class may also be defined by its boxes alone (``BoxExemplars.is_text_ignored``), which SAM 3 reads as the text
+    ``PromptEncoder.VISUAL_TEXT``. Besides instances, the semantic head gives a probability map per class
+    (``segment_semantic_images``).
 
-    The images of a mini-batch are encoded once, the text queries of a prompt are encoded once and reused while the
-    same prompt is segmented, and the detection and mask decoders run once per query over the images without
+    The images of a mini-batch are encoded once, the queries of a prompt are encoded once and reused while the same
+    prompt is segmented, and the detection and mask decoders run once per query over the images without
     exemplars of its class and once over the images with exemplars, whose box counts are padded with ignored
     boxes. An instance scores the product of its query match and the presence of the concept in the image. Queries
     run independently, so one object may be found by several queries; the class-wise NMS merges those of one class.
 
-    ``get_text_features`` returns the output of the text encoder with the projected features attached as
-    ``pooler_output`` (``PROJECTED_TEXT_FEATURES_ATTRIBUTE``), which is not part of that output type, so the
-    attribute is read dynamically. When no instance of a query passes the threshold, the ``transformers``
+    When no instance of a query passes the threshold, the ``transformers``
     post-processing returns its masks at model resolution, so empty results are rebuilt at the image size.
     """
 
@@ -56,8 +50,6 @@ class Sam3Segmenter(OpenVocabularySegmenter):
     MODEL_TYPES: ClassVar[frozenset[str]] = frozenset({"sam3", "sam3_video", "sam3_lite_text"})
     LITE_TEXT_MODEL_TYPES: ClassVar[frozenset[str]] = frozenset({"sam3_lite_text"})
     MASK_THRESHOLD: ClassVar[float] = 0.5
-    VISUAL_ONLY_TEXT: ClassVar[str] = "visual"
-    PROJECTED_TEXT_FEATURES_ATTRIBUTE: ClassVar[str] = "pooler_output"
 
     def __init__(self, settings: SegmenterSettings) -> None:
         """
@@ -83,6 +75,7 @@ class Sam3Segmenter(OpenVocabularySegmenter):
             else Sam3Model.from_pretrained(settings.weights_path)
         )
         self._runtime.prepare_model(self._model)
+        self._prompt_encoder: PromptEncoder = PromptEncoder(self._model, self._processor, self._runtime)
         self._active_encoding: PromptEncoding | None = None
         self._visual_only_encoding: PromptEncoding | None = None
 
@@ -94,9 +87,9 @@ class Sam3Segmenter(OpenVocabularySegmenter):
         Returns
         -------
         frozenset[PromptKind]
-            ``TEXT`` only; images define concepts through ``ImageExemplars``.
+            ``TEXT`` and ``VISUAL``; boxes on the segmented images refine concepts through ``ImageExemplars``.
         """
-        return frozenset({PromptKind.TEXT})
+        return frozenset({PromptKind.TEXT, PromptKind.VISUAL})
 
     @property
     def is_exemplar_supported(self) -> bool:
@@ -364,26 +357,12 @@ class Sam3Segmenter(OpenVocabularySegmenter):
 
     def _encoding_of(self, prompt: Prompt) -> PromptEncoding:
         if self._active_encoding is None or not self._active_encoding.is_for(prompt):
-            self._active_encoding = self._encode(prompt)
+            self._active_encoding = self._prompt_encoder.encode(prompt)
         return self._active_encoding
 
     def _visual_only_encoding_of(self) -> PromptEncoding:
         if self._visual_only_encoding is None:
-            self._visual_only_encoding = self._encode(Prompt.from_class_names((self.VISUAL_ONLY_TEXT,)))
-        return self._visual_only_encoding
-
-    def _encode(self, prompt: Prompt) -> PromptEncoding:
-        text_inputs: BatchEncoding = self._processor(text=list(prompt.query_texts), return_tensors="pt")
-        input_ids: torch.Tensor = self._runtime.to_device(text_inputs["input_ids"])
-        attention_mask: torch.Tensor = self._runtime.to_device(text_inputs["attention_mask"])
-        with torch.inference_mode():
-            text_outputs: object = cast(
-                object,
-                self._model.get_text_features(
-                    input_ids=cast(torch.LongTensor, input_ids), attention_mask=attention_mask
-                ),
+            self._visual_only_encoding = PromptEncoder(self._model, self._processor, self._runtime).encode(
+                Prompt.from_class_names((PromptEncoder.VISUAL_TEXT,))
             )
-        features: object = getattr(text_outputs, self.PROJECTED_TEXT_FEATURES_ATTRIBUTE, None)
-        if not isinstance(features, torch.Tensor):
-            raise TypeError(f"unexpected text encoder output: {type(text_outputs)}")
-        return PromptEncoding(prompt=prompt, features=features, attention_mask=attention_mask)
+        return self._visual_only_encoding

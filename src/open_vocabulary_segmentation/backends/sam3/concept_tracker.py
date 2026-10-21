@@ -1,10 +1,10 @@
 from collections.abc import Sequence
-from typing import ClassVar
+from typing import ClassVar, cast
 
 import torch
-from open_vocabulary_detector import Device, ImageSize, Prompt
+from open_vocabulary_detector import Device, ImageSize, Prompt, PromptKind
 from PIL import Image
-from transformers import Sam3VideoModel, Sam3VideoProcessor
+from transformers import Sam3Model, Sam3VideoModel, Sam3VideoProcessor
 from transformers.models.sam3_video.modeling_sam3_video import Sam3VideoInferenceSession
 
 from ...runtime import TorchRuntime
@@ -16,6 +16,7 @@ from ...video.concept_tracking import (
 )
 from ..checkpoint_config import CheckpointConfig
 from .concept_tracking_session import Sam3ConceptTrackingSession
+from .prompt_encoder import PromptEncoder
 
 
 class Sam3ConceptTracker(ConceptTracker):
@@ -23,7 +24,9 @@ class Sam3ConceptTracker(ConceptTracker):
     SAM 3 video concept tracker backed by ``transformers.Sam3VideoModel``.
 
     SAM 3 video runs the SAM 3 detector on every frame and the SAM 3 tracker on every track, matches detections with
-    tracks, starts tracks for new instances and removes duplicate and spurious tracks during a hot start.
+    tracks, starts tracks for new instances and removes duplicate and spurious tracks during a hot start. Text and
+    visual queries are encoded by ``PromptEncoder`` for the detector, so reference images define concepts as on
+    still images.
     ``ConceptTrackingParameters`` override the thresholds of this fusion on the loaded model; a hot start shorter
     than its frame counts is rejected, since it would silently disable the removal. Mask post-processing
     (hole filling, speck removal, NMS) needs the optional ``kernels`` package; without it, ``transformers`` skips it.
@@ -44,6 +47,8 @@ class Sam3ConceptTracker(ConceptTracker):
         ------
         ValueError
             If the checkpoint is not a ``sam3_video`` checkpoint.
+        TypeError
+            If the checkpoint does not hold a SAM 3 detector.
         """
         super().__init__(settings)
         CheckpointConfig.require_model_type(settings.weights_path, self.MODEL_TYPES)
@@ -51,7 +56,23 @@ class Sam3ConceptTracker(ConceptTracker):
         self._processor: Sam3VideoProcessor = Sam3VideoProcessor.from_pretrained(settings.weights_path)
         self._model: Sam3VideoModel = Sam3VideoModel.from_pretrained(settings.weights_path)
         self._runtime.prepare_model(self._model)
+        detector: object = cast(object, self._model.detector_model)
+        if not isinstance(detector, Sam3Model):
+            raise TypeError(f"unexpected SAM 3 video detector: {type(detector)}")
+        self._prompt_encoder: PromptEncoder = PromptEncoder(detector, self._processor, self._runtime)
         self._apply(settings.parameters)
+
+    @property
+    def supported_prompt_kinds(self) -> frozenset[PromptKind]:
+        """
+        Query kinds the tracker accepts.
+
+        Returns
+        -------
+        frozenset[PromptKind]
+            ``TEXT`` and ``VISUAL``.
+        """
+        return frozenset({PromptKind.TEXT, PromptKind.VISUAL})
 
     def _apply(self, parameters: ConceptTrackingParameters) -> None:
         model: Sam3VideoModel = self._model
@@ -124,7 +145,7 @@ class Sam3ConceptTracker(ConceptTracker):
             processor=self._processor,
             inference_session=inference_session,
             runtime=self._runtime,
-            prompt=prompt,
+            prompt_encoding=self._prompt_encoder.encode(prompt),
             settings=self.settings,
             image_size=image_size,
             frame_count=frame_count,

@@ -11,8 +11,8 @@ from .settings import ConceptTrackerSettings
 
 class ConceptTracker(ABC):
     """
-    Common base of video concept trackers: detects every instance of the text queries of a prompt and tracks each
-    with a stable identifier (SAM 3 video).
+    Common base of video concept trackers: detects every instance of the queries of a prompt and tracks each with a
+    stable identifier (SAM 3 video). Text queries are always accepted; a backend may accept visual queries too.
 
     Attributes
     ----------
@@ -37,7 +37,7 @@ class ConceptTracker(ABC):
         Returns
         -------
         frozenset[PromptKind]
-            ``TEXT`` only.
+            ``TEXT`` unless a backend accepts more.
         """
         return frozenset({PromptKind.TEXT})
 
@@ -50,7 +50,7 @@ class ConceptTracker(ABC):
         frames : Sequence[ImageInput]
             Frames of the video in order, all of one size.
         prompt : Prompt
-            Classes and their text queries.
+            Classes and their queries.
 
         Raises
         ------
@@ -78,7 +78,7 @@ class ConceptTracker(ABC):
         Parameters
         ----------
         prompt : Prompt
-            Classes and their text queries.
+            Classes and their queries.
 
         Raises
         ------

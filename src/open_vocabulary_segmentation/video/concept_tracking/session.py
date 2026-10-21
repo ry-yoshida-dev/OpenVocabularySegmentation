@@ -13,7 +13,7 @@ class ConceptTrackingSession(ABC):
     """
     Tracking state of the concepts of one prompt in one video.
 
-    Every instance of every text query of the prompt is detected, given a track identifier on its first frame and
+    Every instance of every query of the prompt is detected, given a track identifier on its first frame and
     tracked through the following frames; new instances join as they appear. An offline session
     (``ConceptTracker.start_session``) knows every frame and is processed with ``propagate``; every call starts
     from a fresh state, while the passes of one bidirectional call share their tracks. A streaming session
@@ -25,7 +25,7 @@ class ConceptTrackingSession(ABC):
         Parameters
         ----------
         prompt : Prompt
-            Tracked classes and their text queries.
+            Tracked classes and their queries.
         image_size : ImageSize | None
             Size of the frames; ``None`` for a stream before its first frame.
         frame_count : int
@@ -42,7 +42,7 @@ class ConceptTrackingSession(ABC):
     @property
     def prompt(self) -> Prompt:
         """
-        Tracked classes and their text queries.
+        Tracked classes and their queries.
 
         Returns
         -------

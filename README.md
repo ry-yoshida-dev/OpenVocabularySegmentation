@@ -10,11 +10,11 @@ returns one result type for every backend.
 
 | Interface | What it segments | SAM | SAM 2 | SAM 3 | EdgeTAM | Florence-2 |
 | --------- | ---------------- | :-: | :---: | :---: | :-----: | :--------: |
-| `OpenVocabularySegmenter` | Every instance of the classes of a text (or visual) `Prompt` | with a box detector | with a box detector | yes, plus box exemplars and semantic maps | with a box detector | yes, plus referring expressions |
+| `OpenVocabularySegmenter` | Every instance of the classes of a text (or visual) `Prompt` | with a box detector | with a box detector | yes (text and visual), plus box exemplars and semantic maps | with a box detector | yes, plus referring expressions |
 | `PromptableSegmenter` | The object marked by each `ObjectPrompt` (points, box, mask) | yes | yes | yes | yes | boxes |
 | `AutomaticMaskGenerator` | Everything, with a point grid over crops | yes | yes | yes | yes | - |
 | `ObjectTracker` | Objects prompted on some video frames, through the video | - | yes | yes | yes | - |
-| `ConceptTracker` | Every instance of text queries through a video, with track ids | - | - | yes | - | - |
+| `ConceptTracker` | Every instance of text or visual queries through a video, with track ids | - | - | yes | - | - |
 
 It builds on [OpenVocabularyDetector](https://github.com/ry-yoshida-dev/OpenVocabularyDetector) (class prompts,
 devices and box detectors, re-exported here) and expresses geometry with
@@ -49,7 +49,9 @@ with [ImageContainer](https://github.com/ry-yoshida-dev/ImageContainer) (`Binary
 
 SAM, SAM 2 and EdgeTAM only mask given boxes, so as `OpenVocabularySegmenter` they take the boxes of any
 `open_vocabulary_detector` model (Grounded-SAM style, e.g. Grounding DINO + SAM 2.1, OWLv2 + SAM); visual queries
-work when the detector supports them (OWL-ViT, OWLv2, YOLOE). SAM 3 scores each instance by its match with the
+work when the detector supports them (OWL-ViT, OWLv2, YOLOE). SAM 3 reads a visual query as the text `"visual"`
+plus the geometry tokens of its reference boxes, encoded on the reference images, both on images and in video. SAM 3
+scores each instance by its match with the
 concept and the presence of the concept in the image. Florence-2 is generative and has no scores (confidence `1.0`,
 no mask logits), and a phrase absent from the image usually still gets an instance.
 

@@ -27,6 +27,6 @@ Nothing is imported eagerly: settings import only the sub-package of the request
 | [sam/](./sam/README.md) | SAM promptable segmenter. |
 | [sam2/](./sam2/README.md) | SAM 2 / SAM 2.1 promptable segmenter. |
 | [edgetam/](./edgetam/README.md) | EdgeTAM promptable segmenter, reusing the SAM 2 implementation. |
-| [sam3/](./sam3/README.md) | SAM 3 concept segmentation (text, exemplars, semantics), promptable tracker and video concept tracker. |
+| [sam3/](./sam3/README.md) | SAM 3 concept segmentation (text, reference images, exemplars, semantics), promptable tracker and video concept tracker. |
 | [memory_tracker/](./memory_tracker/README.md) | Video object tracker of SAM 2 and the SAM 3 tracker. |
 | [florence2/](./florence2/README.md) | Florence-2 detection + region segmentation, referring expression segmentation and box segmentation. |

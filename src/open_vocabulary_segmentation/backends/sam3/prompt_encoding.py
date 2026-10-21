@@ -9,17 +9,18 @@ from transformers.modeling_outputs import BaseModelOutputWithPooling
 @dataclass(frozen=True, eq=False)
 class PromptEncoding:
     """
-    Text features of every query of one ``Prompt``, reused for every image batch segmented with it.
+    Prompt features of every query of one ``Prompt``, reused for every image batch segmented with it.
 
-    SAM 3 encodes a text query independently of the image, so the text encoder runs once per prompt instead of once
-    per query and image.
+    SAM 3 encodes a query independently of the segmented image, so the encoders run once per prompt instead of once
+    per query and image. A row holds the text tokens of a query, followed by the geometry tokens of its reference
+    boxes for a visual query.
 
     Attributes
     ----------
     prompt : Prompt
         Prompt the encoding was built from.
     features : torch.Tensor
-        Projected text features of every query, shape (Q, T, D).
+        Prompt features of every query, shape (Q, T, D).
     attention_mask : torch.Tensor
         Attention mask of every query, shape (Q, T).
 
